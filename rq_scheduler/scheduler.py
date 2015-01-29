@@ -12,10 +12,20 @@ from rq.queue import Queue
 
 from redis import WatchError
 
+try:
+    cron_supported = True
+    from croniter import croniter
+except ImportError:
+    cron_supported = False
+
 from .utils import from_unix, to_unix
 
 logger = logging.getLogger(__name__)
 
+if cron_supported:
+    def get_next_cron(s):
+        zero_now = datetime.utcnow().replace(second=0, microsecond=0)
+        return croniter(s, zero_now).get_current()
 
 class Scheduler(object):
     scheduler_key = 'rq:scheduler'
@@ -133,11 +143,30 @@ class Scheduler(object):
         """
         Schedule a job to be periodically executed, at a certain interval.
         """
+        if cron_supported:
+            # Support cron scheduling with croniter by passing in a cron schedule string
+            # in the scheduled_time parameter.  PWH 2015-01-28
+            try:
+                cron_sched = scheduled_time.split() # Is it a string?
+            except AttributeError:
+                cron_sched = None # If scheduled_time isn't a string, proceed as normal
+            else:
+                if len(cron_sched)==5: # Cron schedules must have 5 fields
+                    cron_sched = scheduled_time # Put the bits back together for use
+                    scheduled_time = get_next_cron(cron_sched)
+                    interval = scheduled_time - to_unix(datetime.utcnow())
+                    repeat = 1  # This will actually repeat forever below
+                else:
+                    raise ValueError, "Cron schedules must have 5 fields"
+
         # Set result_ttl to -1 for periodic jobs, if result_ttl not specified
         if interval is not None and result_ttl is None:
             result_ttl = -1
         job = self._create_job(func, args=args, kwargs=kwargs, commit=False,
                                result_ttl=result_ttl, queue_name=queue_name)
+        if cron_supported:
+            if cron_sched is not None:
+                job.meta['cron'] = cron_sched
         if interval is not None:
             job.meta['interval'] = int(interval)
         if repeat is not None:
@@ -264,10 +293,17 @@ class Scheduler(object):
 
         interval = job.meta.get('interval', None)
         repeat = job.meta.get('repeat', None)
+        cron_sched = job.meta.get('cron', None)
 
         # If job is a repeated job, decrement counter
         if repeat:
-            job.meta['repeat'] = int(repeat) - 1
+            # Unless we have a cron schedule, then set next run
+            # according to that, and don't decrement the repeat count
+            if cron_supported and cron_sched is not None:
+                now_timestamp = to_unix(datetime.utcnow())
+                job.meta['interval'] = get_next_cron(cron_sched) - now_timestamp
+            else:
+                job.meta['repeat'] = int(repeat) - 1
         job.enqueued_at = datetime.utcnow()
         job.save()
 
