@@ -153,8 +153,9 @@ class Scheduler(object):
             else:
                 if len(cron_sched)==5: # Cron schedules must have 5 fields
                     cron_sched = scheduled_time # Put the bits back together for use
-                    scheduled_time = get_next_cron(cron_sched)
-                    interval = scheduled_time - to_unix(datetime.utcnow())
+                    scheduled_timestamp = get_next_cron(cron_sched)
+                    interval = scheduled_timestamp - to_unix(datetime.utcnow())
+                    scheduled_time = datetime.utcfromtimestamp(scheduled_timestamp)
                     repeat = 1  # This will actually repeat forever below
                 else:
                     raise ValueError, "Cron schedules must have 5 fields"
